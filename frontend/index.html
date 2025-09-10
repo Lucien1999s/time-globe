@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Globe Demo</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <!-- 讓 OrbitControls.js 內部的 `from 'three'` 能解析到本機 three.module.js -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/static/vendor/three.module.js"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud">Lat —°, Lon —°</div>
+  <div id="hint">點擊地球任一處，鏡頭會平滑飛過去並顯示經緯度</div>
+
+  <!-- 以 ES Module 載入主程式 -->
+  <script type="module" src="/static/main.js"></script>
+</body>
+</html>
