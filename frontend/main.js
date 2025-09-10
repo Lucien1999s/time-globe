@@ -1,9 +1,9 @@
-// frontend/main.js — UV-based picking (fixed latitude & Y sampling), highlight + 3D pin + no-bounce fly
+// frontend/main.js — country picking + reverse geocoding (admin1/city) + highlight + 3D pin + no-bounce fly
 import * as THREE from 'three';
 import { OrbitControls } from '/static/vendor/OrbitControls.js';
 
 let scene, camera, renderer, controls, raycaster, mouse, earth, pin;
-let highlightLayer = null;   // 透明高亮層
+let highlightLayer = null;   // 高亮透明層
 let picker = null;           // { W,H, canvas, ctx, idMap, pickUV(u,v) }
 
 let flyAnim = null;
@@ -123,19 +123,20 @@ function onPointerUp(e) {
   const hit = raycaster.intersectObject(earth)[0];
   if (!hit) return;
 
-  // === 以 UV 為準（Geometry 的 v: 0=南極, 1=北極） ===
+  // === 以 UV 為準（SphereGeometry: v=0 南極 / v=1 北極） ===
   const u = ((hit.uv?.x ?? 0) % 1 + 1) % 1;
   const v = ((hit.uv?.y ?? 0) % 1 + 1) % 1;
 
-  // 正確緯度：lat = -90 + 180*v  （台灣 v≈0.62 → +23°）
+  // 正確緯度公式：lat = -90 + 180*v
   const lon = u * 360 - 180;
   const lat = -90 + 180 * v;
 
-  // 讀 ID 畫布像素：Canvas 原點在上方 → y = (1 - v) * H
+  // 用 ID 貼圖取國家
   const picked = picker.pickUV(u, v); // { feature, name, iso3 } 或 null
 
+  // 先更新 HUD（國家）
   if (picked) {
-    HUD.textContent = `Lat ${lat.toFixed(4)}°, Lon ${lon.toFixed(4)}° — ${picked.name} (${picked.iso3 || '—'})`;
+    HUD.textContent = `Lat ${lat.toFixed(4)}°, Lon ${lon.toFixed(4)}° — ${picked.name}`;
     highlightLayer.clear();
     highlightLayer.paint(picked.feature);
   } else {
@@ -143,12 +144,55 @@ function onPointerUp(e) {
     highlightLayer.clear();
   }
 
-  // pin 用命中點方向（視覺最準）
+  // pin + 飛行到命中方向
   const dir = hit.point.clone().normalize();
   setPinAtDirection(dir);
   flyToDirection(dir, 1000);
+
+  // 追加 admin1/city（反向地理編碼）
+  enrichWithRevGeo(lat, lon, picked?.iso3);
 }
 
+/* ---------- 反向地理編碼：補上州/省、城市 ---------- */
+async function enrichWithRevGeo(lat, lon, iso3) {
+  const url = `/api/revgeo?lat=${lat.toFixed(6)}&lon=${lon.toFixed(6)}`;
+  try {
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) {
+      console.warn("[revgeo] HTTP", res.status, url);
+      appendHudDetail("(no city)");
+      return;
+    }
+    const j = await res.json();
+    console.debug("[revgeo] result:", j);
+
+    const admin1 = j.admin1 || null;
+    const city   = j.city || null;
+
+    if (admin1 || city) {
+      const suffix = [admin1, city].filter(Boolean).join(" › ");
+      appendHudDetail(suffix);
+    } else {
+      appendHudDetail("(no city)");
+    }
+  } catch (err) {
+    console.error("[revgeo] error:", err);
+    appendHudDetail("(revgeo failed)");
+  }
+}
+
+// 把細節安全「追加」到 HUD 末端，不覆蓋前半段
+function appendHudDetail(text) {
+  if (!text) return;
+  const hasDetail = / — [^—]+$/.test(HUD.textContent);
+  if (hasDetail) {
+    HUD.textContent = HUD.textContent.replace(/ — [^—]+$/, ` — ${text}`);
+  } else {
+    HUD.textContent = `${HUD.textContent} — ${text}`;
+  }
+}
+
+/* ---------- 飛行與 3D pin（無回彈） ---------- */
 function cancelFlightIfAny() {
   if (isFlying) {
     flyAnim = null;
@@ -158,7 +202,6 @@ function cancelFlightIfAny() {
   }
 }
 
-/* ===== 3D Pin / 飛行（無回彈） ===== */
 function createPin() {
   const g = new THREE.Group();
   const stemH = 0.18, stemR = 0.012;
@@ -222,7 +265,7 @@ function slerpDir(a, b, t) {
          .add(b.clone().multiplyScalar(Math.sin(t * omega) / sinO)).normalize();
 }
 
-/* ===== 底圖 + ID 貼圖（UV 一致） ===== */
+/* ---------- 底圖 + ID 貼圖（UV 一致） ---------- */
 async function buildPoliticalBaseAndPicker(url, opt) {
   const geo = await fetch(url).then(r => r.json());
   const W = opt.width || 2048, H = opt.height || 1024;
@@ -268,17 +311,17 @@ async function buildPoliticalBaseAndPicker(url, opt) {
   bctx.globalCompositeOperation = 'source-over';
 
   for (const f of geo.features) {
-    const geom = f.geometry; if (!geom) continue;
+    const g = f.geometry; if (!g) continue;
     const id = nextId++; const r = id & 255, g8 = (id >> 8) & 255, b = (id >> 16) & 255;
     const colorStr = `rgb(${r},${g8},${b})`;
     idMap.set((r) | (g8 << 8) | (b << 16), f);
 
-    if (geom.type === 'Polygon') {
-      for (const s of [-W, 0, W]) { drawRings(bctx, geom.coordinates, s, 'fill'); }
+    if (g.type === 'Polygon') {
+      for (const s of [-W, 0, W]) drawRings(bctx, g.coordinates, s, 'fill');
       // 外框
       for (const s of [-W, 0, W]) {
         bctx.beginPath();
-        const outer = unwrapRing(geom.coordinates[0]);
+        const outer = unwrapRing(g.coordinates[0]);
         outer.forEach(([L, lat], i) => {
           const x = ((L + 180) / 360) * W + s;
           const y = ((90 - lat) / 180) * H;
@@ -288,12 +331,12 @@ async function buildPoliticalBaseAndPicker(url, opt) {
       }
       // ID 填色
       ictx.save(); ictx.fillStyle = colorStr;
-      for (const s of [-W, 0, W]) { drawRings(ictx, geom.coordinates, s, 'fill'); }
+      for (const s of [-W, 0, W]) drawRings(ictx, g.coordinates, s, 'fill');
       ictx.restore();
 
-    } else if (geom.type === 'MultiPolygon') {
-      for (const poly of geom.coordinates) {
-        for (const s of [-W, 0, W]) { drawRings(bctx, poly, s, 'fill'); }
+    } else if (g.type === 'MultiPolygon') {
+      for (const poly of g.coordinates) {
+        for (const s of [-W, 0, W]) drawRings(bctx, poly, s, 'fill');
         for (const s of [-W, 0, W]) {
           bctx.beginPath();
           const outer = unwrapRing(poly[0]);
@@ -305,7 +348,7 @@ async function buildPoliticalBaseAndPicker(url, opt) {
           bctx.closePath(); bctx.stroke();
         }
         ictx.save(); ictx.fillStyle = colorStr;
-        for (const s of [-W, 0, W]) { drawRings(ictx, poly, s, 'fill'); }
+        for (const s of [-W, 0, W]) drawRings(ictx, poly, s, 'fill');
         ictx.restore();
       }
     }
@@ -315,17 +358,17 @@ async function buildPoliticalBaseAndPicker(url, opt) {
   baseTexture.anisotropy = 4;
   baseTexture.wrapS = THREE.RepeatWrapping;
   baseTexture.wrapT = THREE.RepeatWrapping;
-  // 使用預設 flipY=true；與 SphereGeometry UV 對齊
+  // three.js 預設 flipY=true，與 SphereGeometry UV 對齊
   baseTexture.needsUpdate = true;
 
   const idPicker = {
     W, H, canvas: idc, ctx: ictx, idMap,
-    // 讀像素：Canvas 原點在上方 → y = (1 - v) * H
+    // Canvas 原點在上方 → y = (1 - v) * H
     pickUV: (u, v) => {
       let x = Math.floor(((u % 1 + 1) % 1) * W);
       let y = Math.floor((1 - ((v % 1 + 1) % 1)) * H);
-      if (x < 0) x = 0; if (x >= W) x = W - 1;
-      if (y < 0) y = 0; if (y >= H) y = H - 1;
+      x = Math.min(Math.max(x, 0), W - 1);
+      y = Math.min(Math.max(y, 0), H - 1);
       const p = ictx.getImageData(x, y, 1, 1).data; // [r,g,b,a]
       const colorInt = (p[0]) | (p[1] << 8) | (p[2] << 16);
       const feature = idMap.get(colorInt);
@@ -337,7 +380,7 @@ async function buildPoliticalBaseAndPicker(url, opt) {
   return { baseTexture, idPicker, width: W, height: H };
 }
 
-/* ===== 高亮層（透明第二球） ===== */
+/* ---------- 高亮層（透明第二球） ---------- */
 function makeHighlightLayer(W, H) {
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
@@ -346,7 +389,7 @@ function makeHighlightLayer(W, H) {
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
-  // 同樣使用預設 flipY=true
+  // 與底圖相同方向（flipY=true）
   texture.needsUpdate = true;
 
   const material = new THREE.MeshBasicMaterial({
@@ -414,7 +457,7 @@ function makeHighlightLayer(W, H) {
   return { canvas, ctx, texture, mesh, clear, paint };
 }
 
-/* ===== 共用工具 ===== */
+/* ---------- 共用工具 ---------- */
 function unwrapRing(ring) {
   const out = [];
   let prev = null, offset = 0;
@@ -436,6 +479,7 @@ function countryISO3(p) {
   return p?.ISO_A3 || p?.iso_a3 || p?.ADM0_A3 || p?.WB_A3 || null;
 }
 
+/* ---------- 逐幀 ---------- */
 function animate(now) {
   requestAnimationFrame(animate);
   if (!isFlying) controls.update();
