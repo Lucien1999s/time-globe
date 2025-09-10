@@ -100,7 +100,7 @@ def make_history_info1(
         "- Provide timeline context (centuries / years) when reasonably certain.\n"
         "- Include cultural or architectural heritage if well-known.\n"
         "- Use concise bullet points; keep within ~700 words.\n"
-        "- Avoid fabrication; if uncertain, state the uncertainty explicitly.\n"
+        "- Avoid fabrication; if uncertain, state the uncertainty explicitly and end to generate.\n"
         f"\nPlace: {place}\n"
         "Output style:\n"
         "- Bullet points, one to two sentences per bullet; add Gregorian years where helpful.\n"

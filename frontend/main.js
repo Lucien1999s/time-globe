@@ -1,4 +1,4 @@
-// frontend/main.js — country picking + reverse geocoding (admin1/city) + highlight + 3D pin + no-bounce fly
+// frontend/main.js — globe + side panel (wiki + LLM) + reverse geo + country picking
 import * as THREE from 'three';
 import { OrbitControls } from '/static/vendor/OrbitControls.js';
 
@@ -17,6 +17,21 @@ const TAP  = { maxDistPx: 6, maxMs: 250 };
 
 const APP = document.getElementById('app');
 const HUD = document.getElementById('hud');
+
+// side panel elements
+const EL = {
+  thumb: document.getElementById('place-thumb'),
+  title: document.getElementById('place-title'),
+  desc: document.getElementById('place-desc'),
+  url: document.getElementById('place-url'),
+  summary: document.getElementById('place-summary'),
+  lang: document.getElementById('lang-select'),
+  btnOverview: document.getElementById('btn-overview'),
+  btnAdvanced: document.getElementById('btn-advanced'),
+  out: document.getElementById('history-output'),
+};
+
+let lastPlaceName = null;  // derived place string for wiki/history
 
 init();
 animate();
@@ -85,6 +100,10 @@ async function init() {
   el.addEventListener('pointerup',   onPointerUp,   { passive: true });
 
   window.addEventListener('resize', onResize, false);
+
+  // 側欄按鈕
+  if (EL.btnOverview) EL.btnOverview.addEventListener('click', onClickOverview);
+  if (EL.btnAdvanced) EL.btnAdvanced.addEventListener('click', onClickAdvanced);
 }
 
 function onResize() {
@@ -108,7 +127,7 @@ function onPointerMove(e) {
   if (d2 > thresholdPx * thresholdPx) pointerMoved = true;
 }
 
-function onPointerUp(e) {
+async function onPointerUp(e) {
   if (!pointerDown) return;
   const dt = performance.now() - pointerDown.t;
   const moved = pointerMoved;
@@ -149,36 +168,63 @@ function onPointerUp(e) {
   setPinAtDirection(dir);
   flyToDirection(dir, 1000);
 
-  // 追加 admin1/city（反向地理編碼）
-  enrichWithRevGeo(lat, lon, picked?.iso3);
+  // 反向地理編碼 → 推導 place 名稱 → 拉 Wiki/Info 卡
+  const place = await enrichWithRevGeo(lat, lon, picked?.name);
+  if (place) {
+    lastPlaceName = place;
+    fetchAndRenderPlaceInfo(place);
+  } else if (picked?.name) {
+    lastPlaceName = picked.name;
+    fetchAndRenderPlaceInfo(picked.name);
+  } else {
+    // 海洋時也給一個大致名稱
+    const ocean = oceanNameByLatLon(lat, lon);
+    lastPlaceName = ocean || `(${lat.toFixed(3)}, ${lon.toFixed(3)})`;
+    fetchAndRenderPlaceInfo(lastPlaceName);
+  }
 }
 
-/* ---------- 反向地理編碼：補上州/省、城市 ---------- */
-async function enrichWithRevGeo(lat, lon, iso3) {
+/* ---------- 反向地理編碼：補上州/省、城市，並回傳 place 名稱 ---------- */
+async function enrichWithRevGeo(lat, lon, countryNameFromPicker) {
   const url = `/api/revgeo?lat=${lat.toFixed(6)}&lon=${lon.toFixed(6)}`;
   try {
     const res = await fetch(url, { cache: "no-store" });
-    if (!res.ok) {
-      console.warn("[revgeo] HTTP", res.status, url);
-      appendHudDetail("(no city)");
-      return;
-    }
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
-    console.debug("[revgeo] result:", j);
 
-    const admin1 = j.admin1 || null;
-    const city   = j.city || null;
+    const admin1  = j.admin1 || null;
+    const city    = j.city || null;
+    const country = j.country || countryNameFromPicker || null;
 
+    // Compose a place string preferring City > Admin1 > Country
+    const place = city || admin1 || country || oceanNameByLatLon(lat, lon) || null;
+
+    // Update HUD tail
     if (admin1 || city) {
       const suffix = [admin1, city].filter(Boolean).join(" › ");
       appendHudDetail(suffix);
+    } else if (country) {
+      appendHudDetail(country);
     } else {
       appendHudDetail("(no city)");
     }
+    return place;
   } catch (err) {
-    console.error("[revgeo] error:", err);
+    console.warn("[revgeo] failed", err);
     appendHudDetail("(revgeo failed)");
+    return countryNameFromPicker || oceanNameByLatLon(lat, lon) || null;
   }
+}
+
+// 估算海洋名稱（粗略分區）— 讓點到海上也能展示資訊
+function oceanNameByLatLon(lat, lon) {
+  if (lat > 66) return "Arctic Ocean";
+  if (lat < -60) return "Southern Ocean";
+  // 簡單經度分段：大略即可
+  const L = ((lon + 540) % 360) - 180; // normalize
+  if (L >= -70 && L <= 20) return "Atlantic Ocean";
+  if (L > 20 && L <= 150) return "Indian Ocean";
+  return "Pacific Ocean";
 }
 
 // 把細節安全「追加」到 HUD 末端，不覆蓋前半段
@@ -189,6 +235,86 @@ function appendHudDetail(text) {
     HUD.textContent = HUD.textContent.replace(/ — [^—]+$/, ` — ${text}`);
   } else {
     HUD.textContent = `${HUD.textContent} — ${text}`;
+  }
+}
+
+/* ---------- 拉 Wiki Place 基本資料並渲染卡片 ---------- */
+async function fetchAndRenderPlaceInfo(placeName) {
+  try {
+    const url = `/api/placeinfo?name=${encodeURIComponent(placeName)}&lang=zh`;
+    EL.summary.textContent = "Loading basic info…";
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const j = await res.json();
+
+    // 未找到 → 用 placeName 當標題
+    if (!j.ok) {
+      EL.title.textContent = placeName;
+      EL.desc.textContent = "";
+      EL.summary.textContent = "No Wikipedia info found.";
+      EL.thumb.src = "";
+      EL.thumb.style.display = "none";
+      EL.url.href = "#";
+      EL.out.textContent = "";
+      return;
+    }
+
+    EL.title.textContent = j.title || placeName;
+    EL.desc.textContent = j.description || "";
+    EL.summary.textContent = j.summary || "(no summary)";
+    EL.url.href = j.url || "#";
+
+    const img = j.original_image || j.thumbnail || "";
+    if (img) {
+      EL.thumb.src = img;
+      EL.thumb.style.display = "block";
+    } else {
+      EL.thumb.src = "";
+      EL.thumb.style.display = "none";
+    }
+
+    // 清掉舊的 LLM 結果
+    EL.out.textContent = "";
+  } catch (err) {
+    console.error("[placeinfo]", err);
+    EL.title.textContent = placeName;
+    EL.desc.textContent = "";
+    EL.summary.textContent = "Failed to load place info.";
+    EL.thumb.src = "";
+    EL.thumb.style.display = "none";
+    EL.url.href = "#";
+  }
+}
+
+/* ---------- 歷史摘要（Gemini） / 進階（OpenAI+Search） ---------- */
+async function onClickOverview() {
+  if (!lastPlaceName) return;
+  await runHistory("/api/history/overview", lastPlaceName, EL.lang.value);
+}
+async function onClickAdvanced() {
+  if (!lastPlaceName) return;
+  await runHistory("/api/history/advanced", lastPlaceName, EL.lang.value);
+}
+
+async function runHistory(endpoint, place, language) {
+  const btns = [EL.btnOverview, EL.btnAdvanced, EL.lang];
+  try {
+    btns.forEach(b => b.disabled = true);
+    EL.out.textContent = "Generating…";
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ place, language })
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const j = await res.json();
+    if (j.ok) EL.out.textContent = j.text || "(no content)";
+    else EL.out.textContent = `Error: ${j.error || "unknown error"}`;
+  } catch (err) {
+    console.error("[history]", err);
+    EL.out.textContent = "Failed to generate history.";
+  } finally {
+    btns.forEach(b => b.disabled = false);
   }
 }
 

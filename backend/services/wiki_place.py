@@ -153,12 +153,5 @@ def placeinfo_api(
 
 # ---------- Local smoke test ----------
 if __name__ == "__main__":
-    import json, random
-    cities = ["台北", "London", "Cairo", "Nairobi", "São Paulo",
-              "Tokyo", "New York City", "Hanoi", "Berlin", "Sydney"]
-    sample = random.sample(cities, 5)
-    print("Testing cities:", sample)
-    for c in sample:
-        info = get_place_basic(c, lang="zh")
-        print("\n=== ", c, " ===")
-        print(json.dumps(info, ensure_ascii=False, indent=2), "...")
+    info = get_place_basic("新北市", lang="zh")
+    print(info)
