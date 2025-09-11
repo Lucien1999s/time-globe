@@ -35,6 +35,28 @@ function uiLangToWikiLang(v) {
 // === 新增：最後一次點擊的上下文（送後端打分用） ===
 let lastCtx = { lat: null, lon: null, country: null, admin1: null, city: null };
 
+function buildHistoryQuery(placeName, ctx) {
+  const parts = [
+    ctx?.country || null,
+    ctx?.admin1 || null,
+    ctx?.city || null,
+    placeName || null,
+  ];
+
+  // 去重、去空白
+  const seen = new Set();
+  const out = [];
+  for (const s of parts) {
+    const t = (s || "").trim();
+    if (!t) continue;
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
+  }
+  return out.join(", ");
+}
+
 // side panel elements
 const EL = {
   thumb: document.getElementById('place-thumb'),
@@ -341,11 +363,14 @@ async function fetchAndRenderPlaceInfo(placeName, ctx) {
 /* ---------- 歷史摘要（Gemini） / 進階（OpenAI+Search） ---------- */
 async function onClickOverview() {
   if (!lastPlaceName) return;
-  await runHistory("/api/history/overview", lastPlaceName, EL.lang.value);
+  const queryPlace = buildHistoryQuery(lastPlaceName, lastCtx);
+  await runHistory("/api/history/overview", queryPlace, EL.lang.value);
 }
+
 async function onClickAdvanced() {
   if (!lastPlaceName) return;
-  await runHistory("/api/history/advanced", lastPlaceName, EL.lang.value);
+  const queryPlace = buildHistoryQuery(lastPlaceName, lastCtx);
+  await runHistory("/api/history/advanced", queryPlace, EL.lang.value);
 }
 
 async function runHistory(endpoint, place, language) {
