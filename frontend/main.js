@@ -335,34 +335,53 @@ async function fetchAndRenderPlaceInfo(placeName, ctx) {
   if (document.body.classList.contains('side-collapsed')) {
     document.body.classList.remove('side-collapsed');
     const btnToggle = document.getElementById('toggle-side');
-    if (btnToggle) btnToggle.textContent = '❯';  // 保持箭頭方向正確
+    if (btnToggle) btnToggle.textContent = '❯';
   }
-  try {
-    // Abort any previous in-flight request
-    if (placeinfoAbort) placeinfoAbort.abort();
-    placeinfoAbort = new AbortController();
 
+  // 幫手：實際打 /api/placeinfo
+  async function requestWiki(name, ctx, signal) {
     const uiLang = EL.lang ? EL.lang.value : "繁體中文";
     const lang = uiLangToWikiLang(uiLang);
+    const q = new URLSearchParams({ name, lang });
 
-    const q = new URLSearchParams({ name: placeName, lang });
+    // 傳入最基本的 bias（country/lat/lon），不強制帶 admin1/city，避免誤導
     if (ctx?.country) q.set("country", ctx.country);
-    if (ctx?.admin1)  q.set("admin1",  ctx.admin1);
-    if (ctx?.city)    q.set("city",    ctx.city);
     if (typeof ctx?.lat === "number") q.set("lat", String(ctx.lat));
     if (typeof ctx?.lon === "number") q.set("lon", String(ctx.lon));
 
-    EL.summary.textContent = "Loading basic info…";
-
     const res = await fetch(`/api/placeinfo?${q.toString()}`, {
       cache: "no-store",
-      signal: placeinfoAbort.signal
+      signal
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const j = await res.json();
+    return res.json();
+  }
 
-    if (!j.ok) {
-      EL.title.textContent = placeName;
+  try {
+    if (placeinfoAbort) placeinfoAbort.abort();
+    placeinfoAbort = new AbortController();
+
+    EL.summary.textContent = "Loading basic info…";
+
+    // 先決定第一次要查的名稱：有 city → city；否則用 country；都沒有用原 placeName
+    const primary = (ctx?.city && ctx.city.trim())
+      ? ctx.city.trim()
+      : (ctx?.country && ctx.country.trim())
+        ? ctx.country.trim()
+        : (placeName || "").trim();
+
+    let result = await requestWiki(primary, ctx, placeinfoAbort.signal);
+
+    // 如果第一次以 city 查失敗，且有 country → 再用 country retry 一次
+    const cityTried = !!(ctx?.city && ctx.city.trim() && primary === ctx.city.trim());
+    if (!(result && result.ok) && cityTried && ctx?.country) {
+      result = await requestWiki(ctx.country.trim(), ctx, placeinfoAbort.signal);
+    }
+
+    // 渲染
+    if (!result || !result.ok) {
+      const fallbackTitle = primary || placeName || DEFAULTS.title;
+      EL.title.textContent = fallbackTitle;
       EL.desc.textContent = "";
       EL.summary.textContent = "No Wikipedia info found.";
       EL.thumb.src = DEFAULTS.img;
@@ -372,18 +391,17 @@ async function fetchAndRenderPlaceInfo(placeName, ctx) {
       return;
     }
 
-    EL.title.textContent = j.title || placeName;
-    EL.desc.textContent = j.description || "";
-    EL.summary.textContent = j.summary || "(no summary)";
-    EL.url.href = j.url || "#";
+    EL.title.textContent = result.title || primary || placeName;
+    EL.desc.textContent = result.description || "";
+    EL.summary.textContent = result.summary || "(no summary)";
+    EL.url.href = result.url || "#";
 
-    const img = j.original_image || j.thumbnail || DEFAULTS.img;
+    const img = result.original_image || result.thumbnail || DEFAULTS.img;
     EL.thumb.src = img;
     EL.thumb.style.display = "block";
-
     EL.out.textContent = "";
   } catch (err) {
-    if (err.name === "AbortError") return; // 被新請求中止：安靜返回
+    if (err.name === "AbortError") return;
     console.error("[placeinfo]", err);
     EL.title.textContent = placeName || DEFAULTS.title;
     EL.desc.textContent = "";
@@ -392,7 +410,6 @@ async function fetchAndRenderPlaceInfo(placeName, ctx) {
     EL.thumb.style.display = "block";
     EL.url.href = "#";
   } finally {
-    // 清空 controller，避免 memory leak
     placeinfoAbort = null;
   }
 }
@@ -940,7 +957,7 @@ if (EV.fab) {
     const country = (lastCtx.country || '').trim();
 
     if (!city && !country) {
-      EV.list.innerHTML = '<div style="padding:12px;color:#cbd6e6">請先點擊地球選擇一座城市或國家，再試一次。</div>';
+      EV.list.innerHTML = '<div style="padding:12px;color:#cbd6e6">Please click on the globe and try again.</div>';
       return;
     }
 
