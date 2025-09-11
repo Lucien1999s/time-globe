@@ -31,6 +31,26 @@ const EL = {
   out: document.getElementById('history-output'),
 };
 
+// 預設占位內容（專業版）
+const DEFAULTS = {
+  title: 'Time-Globe：Global Spacetime',
+  desc: 'Click the globe for Wiki summary, images, links, plus history and timeline.',
+  summary: 'Tip: Rotate (drag), Zoom (scroll), Select (tap). Side button shows History/Timeline.',
+  img: '/static/assets/default.jpg',
+  url: '#'
+};
+
+// 一鍵套用預設資訊卡
+function setDefaultCard() {
+  EL.title.textContent = DEFAULTS.title;
+  EL.desc.textContent = DEFAULTS.desc;
+  EL.summary.textContent = DEFAULTS.summary;
+  EL.thumb.src = DEFAULTS.img;
+  EL.thumb.style.display = 'block';       // 確保顯示
+  EL.url.href = DEFAULTS.url;
+  EL.out.textContent = '';                // 清空歷史區塊
+}
+
 let lastPlaceName = null;  // derived place string for wiki/history
 
 init();
@@ -100,6 +120,9 @@ async function init() {
   el.addEventListener('pointerup',   onPointerUp,   { passive: true });
 
   window.addEventListener('resize', onResize, false);
+
+  // 側欄按鈕綁定前/後都可，先把預設卡片顯示出來
+  setDefaultCard();
 
   // 側欄按鈕
   if (EL.btnOverview) EL.btnOverview.addEventListener('click', onClickOverview);
@@ -238,53 +261,53 @@ function appendHudDetail(text) {
   }
 }
 
-/* ---------- 拉 Wiki Place 基本資料並渲染卡片 ---------- */
+/* ---------- 拉 Wiki Place 基本資料並渲染卡片（含預設回退） ---------- */
 async function fetchAndRenderPlaceInfo(placeName) {
   try {
     const url = `/api/placeinfo?name=${encodeURIComponent(placeName)}&lang=zh`;
     EL.summary.textContent = "Loading basic info…";
+
     const res = await fetch(url, { cache: "no-store" });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
 
-    // 未找到 → 用 placeName 當標題
+    // 未找到 → 顯示地名，其他回退到預設
     if (!j.ok) {
       EL.title.textContent = placeName;
       EL.desc.textContent = "";
       EL.summary.textContent = "No Wikipedia info found.";
-      EL.thumb.src = "";
-      EL.thumb.style.display = "none";
+      EL.thumb.src = DEFAULTS.img;        // 用預設圖，不隱藏
+      EL.thumb.style.display = "block";
       EL.url.href = "#";
       EL.out.textContent = "";
       return;
     }
 
+    // 正常資料
     EL.title.textContent = j.title || placeName;
     EL.desc.textContent = j.description || "";
     EL.summary.textContent = j.summary || "(no summary)";
     EL.url.href = j.url || "#";
 
-    const img = j.original_image || j.thumbnail || "";
-    if (img) {
-      EL.thumb.src = img;
-      EL.thumb.style.display = "block";
-    } else {
-      EL.thumb.src = "";
-      EL.thumb.style.display = "none";
-    }
+    // 圖片：優先用原圖/縮圖，沒有就退回預設
+    const img = j.original_image || j.thumbnail || DEFAULTS.img;
+    EL.thumb.src = img;
+    EL.thumb.style.display = "block";
 
-    // 清掉舊的 LLM 結果
+    // 清掉舊的 LLM 產出
     EL.out.textContent = "";
   } catch (err) {
     console.error("[placeinfo]", err);
-    EL.title.textContent = placeName;
+    // 失敗時也維持專業預設，但把標題設為查詢地名，摘要顯示錯誤訊息
+    EL.title.textContent = placeName || DEFAULTS.title;
     EL.desc.textContent = "";
     EL.summary.textContent = "Failed to load place info.";
-    EL.thumb.src = "";
-    EL.thumb.style.display = "none";
+    EL.thumb.src = DEFAULTS.img;
+    EL.thumb.style.display = "block";
     EL.url.href = "#";
   }
 }
+
 
 /* ---------- 歷史摘要（Gemini） / 進階（OpenAI+Search） ---------- */
 async function onClickOverview() {

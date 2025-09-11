@@ -1,162 +1,111 @@
-# globe-demo.py — FastAPI static server + robust reverse geocoding (admin1/city)
-import pathlib, requests
-from fastapi import FastAPI, Query
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
+import time
+import random
+import html
+import urllib.parse
+import requests
+from bs4 import BeautifulSoup
 
-ROOT = pathlib.Path(__file__).parent.resolve()
-FRONTEND_DIR = ROOT / "frontend"
-ASSETS_DIR = FRONTEND_DIR / "assets"
-VENDOR_DIR = FRONTEND_DIR / "vendor"
-ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-VENDOR_DIR.mkdir(parents=True, exist_ok=True)
+DUCK_LITE_SEARCH = "https://lite.duckduckgo.com/lite/"
 
-PINNED_THREE_VER = "0.160.0"
-EARTH_TEXTURE = ASSETS_DIR / "earth_daymap_2k.jpg"
-THREE_MODULE  = VENDOR_DIR / "three.module.js"
-ORBIT_JSM     = VENDOR_DIR / "OrbitControls.js"
-COUNTRIES_GEO = ASSETS_DIR / "countries.geojson"
+def _human_user_agent():
+    return (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/119.0.0.0 Safari/537.36"
+    )
 
-EARTH_MIRRORS = [
-    "https://threejs.org/examples/textures/land_ocean_ice_cloud_2048.jpg",
-    "https://cdn.jsdelivr.net/gh/mrdoob/three.js@r160/examples/textures/land_ocean_ice_cloud_2048.jpg",
-    "https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/textures/land_ocean_ice_cloud_2048.jpg",
-]
-THREE_MODULE_MIRRORS = [
-    f"https://cdn.jsdelivr.net/npm/three@{PINNED_THREE_VER}/build/three.module.js",
-    f"https://unpkg.com/three@{PINNED_THREE_VER}/build/three.module.js",
-    f"https://raw.githubusercontent.com/mrdoob/three.js/r160/build/three.module.js",
-]
-ORBIT_MIRRORS = [
-    f"https://cdn.jsdelivr.net/npm/three@{PINNED_THREE_VER}/examples/jsm/controls/OrbitControls.js",
-    f"https://unpkg.com/three@{PINNED_THREE_VER}/examples/jsm/controls/OrbitControls.js",
-    "https://raw.githubusercontent.com/mrdoob/three.js/r160/examples/jsm/controls/OrbitControls.js",
-]
-COUNTRIES_MIRRORS = [
-    "https://raw.githubusercontent.com/johan/world.geo.json/master/countries.geo.json",
-    "https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson",
-]
-
-def download_first(urls, path: pathlib.Path, name: str):
-    for url in urls:
+def _fetch(url, params=None, timeout=12, max_retries=2, backoff=0.8):
+    headers = {"User-Agent": _human_user_agent()}
+    for attempt in range(max_retries + 1):
         try:
-            print(f"[setup] Fetch {name} from {url}")
-            r = requests.get(url, timeout=30)
-            r.raise_for_status()
-            path.write_bytes(r.content)
-            print(f"[setup] Wrote {path} ({len(r.content)} bytes)")
-            return True
-        except Exception as e:
-            print(f"[setup] WARN: {name} failed from {url}: {e}")
-    print(f"[setup] ERROR: All mirrors failed for {name}")
-    return False
+            r = requests.get(url, params=params, headers=headers, timeout=timeout)
+            # 以 200 視為成功；其他狀態碼也嘗試回傳以利除錯
+            if r.status_code == 200 and r.text:
+                return r.text
+            # 輕量退避
+            time.sleep(backoff * (attempt + 1))
+        except requests.RequestException:
+            time.sleep(backoff * (attempt + 1))
+    return ""
 
-def ensure_assets():
-    download_first(EARTH_MIRRORS, EARTH_TEXTURE, "Earth texture")
-    download_first(THREE_MODULE_MIRRORS, THREE_MODULE, "three.module.js")
-    download_first(ORBIT_MIRRORS, ORBIT_JSM, "OrbitControls.js")
-    download_first(COUNTRIES_MIRRORS, COUNTRIES_GEO, "countries.geojson")
+def _parse_duck_lite(html_text, max_results=5):
+    """
+    解析 DuckDuckGo Lite 結果頁。
+    結構：<table> 中的多個 <tr>；每個結果通常在 <a> 後跟描述文字。
+    """
+    soup = BeautifulSoup(html_text, "html.parser")
+    results = []
+    # Lite 版結果常見在多個 <tr> 內，連結為 <a>；相鄰文字為摘要
+    for a in soup.select("a"):
+        href = a.get("href", "")
+        text = a.get_text(" ", strip=True)
+        if not href or not text:
+            continue
+        # 過濾導航/內部連結
+        if href.startswith("/") or "duckduckgo.com" in href:
+            continue
+        # 找可能的摘要（a 所在行的後續文字）
+        summary = ""
+        # 嘗試從父層 <td>/<tr> 擷取相鄰文字
+        parent = a.find_parent(["td", "tr"])
+        if parent:
+            # 取得父層文字，移除標題文字本身
+            parent_text = parent.get_text(" ", strip=True)
+            # 避免重複標題，並適度截斷
+            summary = parent_text.replace(text, "").strip()
+            # 清掉多餘冒號與空白
+            summary = summary.lstrip(":-—| ").strip()
+        # 乾淨化 URL
+        clean_url = html.unescape(href)
+        results.append((text, clean_url, summary))
+        if len(results) >= max_results:
+            break
+    return results
 
-app = FastAPI(title="Time-Globe MVP")
+def web_search(query: str, max_results: int = 5, polite_delay_sec: float = None) -> str:
+    """
+    免金鑰 Web 搜尋：輸入 str、輸出整段 str。
+    主要使用 DuckDuckGo Lite 結果頁，解析標題、URL、摘要。
+    """
+    if polite_delay_sec is None:
+        polite_delay_sec = round(random.uniform(0.4, 0.9), 2)  # 禮貌性延遲
 
-# CORS（其實同源不需要，但為了擴充/外部前端也能調用，先放）
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
-)
+    q = query.strip()
+    if not q:
+        return "（錯誤）請提供非空白的查詢字串。"
 
-@app.get("/", response_class=HTMLResponse)
-def index():
-    return FileResponse(FRONTEND_DIR / "index.html")
+    # 取得結果頁 HTML
+    payload = {"q": q}
+    html_text = _fetch(DUCK_LITE_SEARCH, params=payload)
+    if not html_text:
+        return "（搜尋失敗）目前無法取得搜尋結果，可能是網路或對方暫時拒絕連線。稍後再試。"
 
-app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+    rows = _parse_duck_lite(html_text, max_results=max_results)
+    if not rows:
+        return "（沒有結果）可能是搜尋語法過於特殊，請嘗試更簡潔的關鍵字。"
 
-@app.get("/api/ping")
-def ping():
-    return {"ok": True}
+    # 組裝輸出字串
+    lines = [f"🔎 查詢：{q}", "-" * 48]
+    for i, (title, url, summary) in enumerate(rows, 1):
+        # 簡單截斷摘要，避免過長
+        if len(summary) > 220:
+            summary = summary[:217] + "..."
+        # 防止 URL 過長造成換行混亂
+        if len(url) > 200:
+            short_url = url[:197] + "..."
+        else:
+            short_url = url
+        lines.append(f"{i}. {title}\n   {short_url}")
+        if summary:
+            lines.append(f"   └ 摘要：{summary}")
+        lines.append("")  # 空行分隔
+        # 禮貌性延遲，避免太頻繁請求
+        time.sleep(polite_delay_sec)
 
-# ---------- Reverse Geocoding (country→admin1→city) ----------
-def normalize(resp: dict, src: str):
-    if src == "bigdatacloud":
-        # https://www.bigdatacloud.com/docs/api/reverse-geocode-client
-        return {
-            "source": "bigdatacloud",
-            "confidence": resp.get("confidence"),
-            "country": resp.get("countryName"),
-            "country_code": (resp.get("countryCode") or "").upper() or None,
-            "admin1": resp.get("principalSubdivision"),
-            "admin2": resp.get("localityInfo", {}).get("administrative", [{}])[1].get("name")
-                      if resp.get("localityInfo", {}).get("administrative") else None,
-            "city": resp.get("city") or resp.get("locality") or None,
-        }
-    if src == "nominatim":
-        # https://nominatim.org/release-docs/latest/api/Reverse/
-        addr = resp.get("address", {})
-        city = addr.get("city") or addr.get("town") or addr.get("village") or addr.get("hamlet")
-        return {
-            "source": "nominatim",
-            "confidence": None,
-            "country": addr.get("country"),
-            "country_code": (addr.get("country_code") or "").upper() or None,
-            "admin1": addr.get("state"),
-            "admin2": addr.get("county") or addr.get("region"),
-            "city": city,
-        }
-    if src == "openmeteo":
-        # https://open-meteo.com/en/docs/geocoding-api
-        item = (resp.get("results") or [None])[0] or {}
-        return {
-            "source": "openmeteo",
-            "confidence": item.get("elevation"),
-            "country": item.get("country"),
-            "country_code": (item.get("country_code") or "").upper() or None,
-            "admin1": item.get("admin1"),
-            "admin2": item.get("admin2"),
-            "city": item.get("name"),
-        }
-    return {}
+    return "\n".join(lines).strip()
 
-@app.get("/api/revgeo", response_class=JSONResponse)
-def reverse_geocode(lat: float = Query(...), lon: float = Query(...)):
-    # 1) BigDataCloud
-    try:
-        u = f"https://api.bigdatacloud.net/data/reverse-geocode-client?latitude={lat}&longitude={lon}&localityLanguage=en"
-        r = requests.get(u, timeout=6)
-        if r.ok:
-            data = normalize(r.json(), "bigdatacloud")
-            if any([data.get("admin1"), data.get("city")]):
-                return data
-    except Exception as e:
-        print("[revgeo] bigdatacloud:", e)
-
-    # 2) Nominatim（zoom 提高一點抓到更細的市鎮）
-    try:
-        u = "https://nominatim.openstreetmap.org/reverse"
-        params = {"lat": lat, "lon": lon, "format": "jsonv2", "addressdetails": 1, "zoom": 14}
-        headers = {"User-Agent": "time-globe/0.1 (contact: dev@time-globe.local)"}
-        r = requests.get(u, params=params, headers=headers, timeout=8)
-        if r.ok:
-            data = normalize(r.json(), "nominatim")
-            if any([data.get("admin1"), data.get("city")]):
-                return data
-    except Exception as e:
-        print("[revgeo] nominatim:", e)
-
-    # 3) Open-Meteo Geocoding
-    try:
-        u = f"https://geocoding-api.open-meteo.com/v1/reverse?latitude={lat}&longitude={lon}&language=en"
-        r = requests.get(u, timeout=6)
-        if r.ok:
-            data = normalize(r.json(), "openmeteo")
-            return data
-    except Exception as e:
-        print("[revgeo] openmeteo:", e)
-
-    return {"source": None, "country": None, "country_code": None, "admin1": None, "admin2": None, "city": None}
-# ----------------------------------------------------
-
+# --- 範例執行 ---
 if __name__ == "__main__":
-    ensure_assets()
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    example_query = "TensorRT-LLM FP8 tutorial"
+    output = web_search(example_query, max_results=5)
+    print(output)

@@ -3,9 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Globe Demo</title>
+  <title>Time-Globe</title>
   <link rel="stylesheet" href="/static/styles.css" />
-  <!-- 讓 OrbitControls.js 內部的 `from 'three'` 能解析到本機 three.module.js -->
+
+  <!-- 讓 OrbitControls.js 內的 `from 'three'` 指到本機 three.module.js -->
   <script type="importmap">
   {
     "imports": {
@@ -15,26 +16,29 @@
   </script>
 </head>
 <body>
-  <!-- 地球渲染容器（鋪滿畫面） -->
+  <!-- 地球渲染容器 -->
   <div id="app"></div>
 
-  <!-- 右側資訊卡（浮在地球上方） -->
+  <!-- 右側資訊卡（預設就顯示專業版占位內容與圖片） -->
   <aside id="side">
     <div class="card">
       <!-- 頂部：縮圖 + 文字基本資料 -->
       <div class="card-header">
         <div class="thumb">
-          <img id="place-thumb" alt="thumbnail" />
+          <!-- 預設縮圖：/static/assets/default.jpg 已存在 -->
+          <img id="place-thumb" src="/static/assets/default.jpg" alt="thumbnail" />
         </div>
         <div class="meta">
-          <h2 id="place-title">—</h2>
-          <div id="place-desc" class="desc">—</div>
+          <h2 id="place-title">Time-Globe：全球地點知識卡</h2>
+          <div id="place-desc" class="desc">點擊地球任一位置，右側將顯示當地維基摘要、圖片與外部連結；也可生成歷史概覽與進階時間軸。</div>
           <a id="place-url" href="#" target="_blank" rel="noopener" class="wiki-link">Open Wikipedia</a>
         </div>
       </div>
 
-      <!-- Wiki 摘要 -->
-      <div class="summary" id="place-summary">Select a place on the globe.</div>
+      <!-- Wiki 摘要（預設文案） -->
+      <div class="summary" id="place-summary">
+        提示：拖曳旋轉、滾輪縮放、輕點選擇地點。側邊按鈕可產生「Historical Overview／Advanced Timeline」。
+      </div>
 
       <!-- 控制列：語言下拉 + 兩顆按鈕 -->
       <div class="controls">
@@ -56,9 +60,9 @@
 
   <!-- 左上 HUD / 右下 Hint -->
   <div id="hud">Lat —°, Lon —°</div>
-  <div id="hint">點擊地球任一處，右側會顯示資訊卡</div>
+  <div id="hint">Tap Earth to view details</div>
 
-  <!-- 以 ES Module 載入主程式 -->
+  <!-- ES Module 主程式 -->
   <script type="module" src="/static/main.js"></script>
 </body>
 </html>
