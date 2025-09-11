@@ -97,6 +97,8 @@ animate();
 
 async function init() {
   scene = new THREE.Scene();
+  // 背景星空
+  scene.background = makeStarfieldTexture({ w: 2048, h: 1024, stars: 3500, nebula: 0.15 });
 
   camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 2000);
   camera.position.set(0, 0, 6);
@@ -135,9 +137,21 @@ async function init() {
 
   earth = new THREE.Mesh(
     new THREE.SphereGeometry(RADIUS, 96, 96),
-    new THREE.MeshPhongMaterial({ map: baseTexture })
+    new THREE.MeshPhongMaterial({
+      map: baseTexture,
+      specular: new THREE.Color(0x335577),
+      shininess: 18,
+      emissive: 0x000000
+    })
   );
   scene.add(earth);
+
+  // 大氣層：反面繪製、微透明
+  const atmosphere = new THREE.Mesh(
+    new THREE.SphereGeometry(RADIUS + 0.05, 64, 64),
+    new THREE.MeshBasicMaterial({ color: 0x66ccff, transparent: true, opacity: 0.08, side: THREE.BackSide })
+  );
+  scene.add(atmosphere);
 
   // 高亮層（透明第二球）
   highlightLayer = makeHighlightLayer(TEX_W, TEX_H);
@@ -405,35 +419,85 @@ function cancelFlightIfAny() {
   }
 }
 
+// ====== 彩色定位 PIN（含發光與脈衝圈） ======
 function createPin() {
   const g = new THREE.Group();
+
+  // 立體針身（雙色）
   const stemH = 0.18, stemR = 0.012;
   const stem = new THREE.Mesh(
-    new THREE.CylinderGeometry(stemR, stemR, stemH, 16),
-    new THREE.MeshPhongMaterial({ color: 0xff8080, shininess: 60 })
+    new THREE.CylinderGeometry(stemR, stemR, stemH, 24),
+    new THREE.MeshPhysicalMaterial({ color: 0x00d2ff, roughness: 0.35, metalness: 0.3 })
   );
   stem.position.y = stemH / 2;
-  const headR = 0.05;
+
+  // 球形針頭（亮面）
+  const headR = 0.055;
   const head = new THREE.Mesh(
-    new THREE.SphereGeometry(headR, 20, 20),
-    new THREE.MeshPhongMaterial({ color: 0xff3b3b, shininess: 80 })
+    new THREE.SphereGeometry(headR, 28, 28),
+    new THREE.MeshPhysicalMaterial({ color: 0xff4dd2, roughness: 0.2, metalness: 0.5, emissive: 0x441122, emissiveIntensity: 0.35 })
   );
   head.position.y = stemH + headR;
+
+  // 底座薄環
   const base = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.018, 0.018, 0.005, 24),
-    new THREE.MeshPhongMaterial({ color: 0xff6666, shininess: 30 })
+    new THREE.CylinderGeometry(0.02, 0.02, 0.006, 32),
+    new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.6, metalness: 0.1 })
   );
-  base.position.y = 0.0025;
-  g.add(base, stem, head);
+  base.position.y = 0.003;
+
+  // 針頭外發光（sprite）
+  const glowTex = makeRadialGlowTexture(256, 256);
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false, opacity: 0.9 }));
+  glow.scale.set(0.26, 0.26, 0.26);
+  glow.position.y = stemH + headR;
+
+  // 地表脈衝圈（沿法線展開）
+  const pulse = new THREE.Mesh(
+    new THREE.RingGeometry(0.05, 0.001, 64),
+    new THREE.MeshBasicMaterial({ color: 0x00e0ff, transparent: true, opacity: 0.75, side: THREE.DoubleSide, depthWrite: false })
+  );
+  pulse.rotation.x = -Math.PI / 2;  // 初始朝上，後續用四元數對齊法線
+  pulse.userData = { t0: performance.now(), speed: 1.2 };
+
+  g.add(base, stem, head, glow, pulse);
+  g.userData = { glow, pulse };
+  g.visible = false;
   return g;
 }
+// 針對某方向放置 pin（dir 為單位向量）
 function setPinAtDirection(dir) {
   const yAxis = new THREE.Vector3(0, 1, 0);
   const tipOffset = 0.01;
   pin.position.copy(dir).multiplyScalar(RADIUS + tipOffset);
   pin.quaternion.setFromUnitVectors(yAxis, dir);
+
+  // 讓脈衝圈貼著地表並沿切平面展開
+  const pulse = pin.userData.pulse;
+  const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+  pulse.quaternion.copy(quat);
+  pulse.position.copy(dir).multiplyScalar(RADIUS + 0.001);
+
   pin.visible = true;
 }
+
+// 建立中心亮到邊緣透明的放射狀貼圖（給 glow）
+function makeRadialGlowTexture(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  const grad = ctx.createRadialGradient(w/2, h/2, 0, w/2, h/2, Math.max(w,h)/2);
+  grad.addColorStop(0.0, 'rgba(255, 255, 255, 0.95)');
+  grad.addColorStop(0.3, 'rgba(255, 128, 220, 0.55)');
+  grad.addColorStop(0.6, 'rgba(0, 210, 255, 0.35)');
+  grad.addColorStop(1.0, 'rgba(0, 0, 0, 0.0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+  const tex = new THREE.CanvasTexture(c);
+  tex.needsUpdate = true;
+  return tex;
+}
+
 function flyToDirection(targetDir, duration = 1200) {
   const r0 = THREE.MathUtils.clamp(camera.position.length(), ZOOM.min, ZOOM.max);
   const fromDir = camera.position.clone().normalize();
@@ -473,20 +537,62 @@ async function buildPoliticalBaseAndPicker(url, opt) {
   const geo = await fetch(url).then(r => r.json());
   const W = opt.width || 2048, H = opt.height || 1024;
 
-  // 底圖
+  // === 底圖畫布 ===
   const base = document.createElement('canvas'); base.width = W; base.height = H;
   const bctx = base.getContext('2d');
 
-  // ID 圖（用於 picking）
+  // 海洋：垂直漸層（深→淺）
+  const oceanGrad = bctx.createLinearGradient(0, 0, 0, H);
+  oceanGrad.addColorStop(0,   '#0a2236');
+  oceanGrad.addColorStop(0.5, '#0f2f4a');
+  oceanGrad.addColorStop(1,   '#133a58');
+  bctx.fillStyle = oceanGrad; bctx.fillRect(0, 0, W, H);
+
+  // 經緯網（每 15 度），極淡
+  bctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  bctx.lineWidth = 0.6;
+  for (let lon = -180; lon <= 180; lon += 15) {
+    const x = ((lon + 180) / 360) * W;
+    bctx.beginPath(); bctx.moveTo(x, 0); bctx.lineTo(x, H); bctx.stroke();
+  }
+  for (let lat = -75; lat <= 75; lat += 15) {
+    const y = ((90 - lat) / 180) * H;
+    bctx.beginPath(); bctx.moveTo(0, y); bctx.lineTo(W, y); bctx.stroke();
+  }
+
+  // === ID 貼圖（國家拾取用） ===
   const idc = document.createElement('canvas'); idc.width = W; idc.height = H;
   const ictx = idc.getContext('2d', { willReadFrequently: true });
   ictx.imageSmoothingEnabled = false;
-
-  // 海洋
-  bctx.fillStyle = opt.ocean || '#0b2238'; bctx.fillRect(0, 0, W, H);
-  ictx.fillStyle = 'rgb(0,0,0)'; ictx.fillRect(0, 0, W, H); // id=0 → 海
+  ictx.fillStyle = 'rgb(0,0,0)'; ictx.fillRect(0, 0, W, H); // id=0 代表海
 
   const idMap = new Map(); let nextId = 1;
+
+  // 大洲調色盤
+  const CONT_COLORS = {
+    'africa'         : '#7fb069',
+    'europe'         : '#f7b267',
+    'asia'           : '#f4845f',
+    'north america'  : '#6db1ff',
+    'south america'  : '#b089f7',
+    'oceania'        : '#4fd1c5',
+    'australia'      : '#4fd1c5',
+    'antarctica'     : '#b9c2d0'
+  };
+  const pickContinent = (p) => {
+    const c = (p?.CONTINENT || p?.continent || p?.region_un || p?.REGION_UN || '').toString().toLowerCase().trim();
+    if (CONT_COLORS[c]) return CONT_COLORS[c];
+    // 例外對映
+    if (c === 'latin america and the caribbean') return CONT_COLORS['south america'];
+    if (c === 'asia-pacific') return CONT_COLORS['asia'];
+    return null;
+  };
+  const hashColor = (s, sat=65, light=55) => {
+    // 國碼雜湊備援
+    let h = 0; for (let i=0;i<s.length;i++){h=(h*31 + s.charCodeAt(i))|0;}
+    h = (h>>>0)%360;
+    return `hsl(${h} ${sat}% ${light}%)`;
+  };
 
   const drawRings = (ctx, rings, shiftPx, mode /*'fill'|'stroke'*/) => {
     ctx.beginPath();
@@ -499,80 +605,71 @@ async function buildPoliticalBaseAndPicker(url, opt) {
       });
       ctx.closePath();
     }
-    if (mode === 'fill') {
-      // @ts-ignore
-      ctx.fill('evenodd'); // 支援洞
-    } else {
-      ctx.stroke();
-    }
+    if (mode === 'fill') ctx.fill('evenodd'); else ctx.stroke();
   };
 
+  // 國界樣式
   bctx.lineWidth = opt.borderWidth ?? 0.9;
-  bctx.strokeStyle = opt.border || '#dbe7f3';
-  bctx.globalAlpha = opt.borderOpacity ?? 0.9;
-  bctx.fillStyle = opt.landFill || '#112f51';
-  bctx.globalCompositeOperation = 'source-over';
+  bctx.strokeStyle = opt.border || 'rgba(255,255,255,0.85)';
 
   for (const f of geo.features) {
     const g = f.geometry; if (!g) continue;
+
+    // 依大洲選填色，否則用國碼雜湊
+    const contFill = pickContinent(f.properties);
+    const fillColor = contFill || hashColor(countryISO3(f.properties) || countryName(f.properties));
+    bctx.fillStyle = fillColor;
+
+    // 給 ID 圖一個遞增顏色編碼
     const id = nextId++; const r = id & 255, g8 = (id >> 8) & 255, b = (id >> 16) & 255;
-    const colorStr = `rgb(${r},${g8},${b})`;
+    const idColor = `rgb(${r},${g8},${b})`;
     idMap.set((r) | (g8 << 8) | (b << 16), f);
 
     if (g.type === 'Polygon') {
       for (const s of [-W, 0, W]) drawRings(bctx, g.coordinates, s, 'fill');
-      // 外框
-      for (const s of [-W, 0, W]) {
-        bctx.beginPath();
-        const outer = unwrapRing(g.coordinates[0]);
-        outer.forEach(([L, lat], i) => {
-          const x = ((L + 180) / 360) * W + s;
-          const y = ((90 - lat) / 180) * H;
-          if (i === 0) bctx.moveTo(x, y); else bctx.lineTo(x, y);
-        });
-        bctx.closePath(); bctx.stroke();
-      }
-      // ID 填色
-      ictx.save(); ictx.fillStyle = colorStr;
+      for (const s of [-W, 0, W]) drawRingsBorder(bctx, g.coordinates[0], s);
+      ictx.save(); ictx.fillStyle = idColor;
       for (const s of [-W, 0, W]) drawRings(ictx, g.coordinates, s, 'fill');
       ictx.restore();
 
     } else if (g.type === 'MultiPolygon') {
       for (const poly of g.coordinates) {
         for (const s of [-W, 0, W]) drawRings(bctx, poly, s, 'fill');
-        for (const s of [-W, 0, W]) {
-          bctx.beginPath();
-          const outer = unwrapRing(poly[0]);
-          outer.forEach(([L, lat], i) => {
-            const x = ((L + 180) / 360) * W + s;
-            const y = ((90 - lat) / 180) * H;
-            if (i === 0) bctx.moveTo(x, y); else bctx.lineTo(x, y);
-          });
-          bctx.closePath(); bctx.stroke();
-        }
-        ictx.save(); ictx.fillStyle = colorStr;
+        for (const s of [-W, 0, W]) drawRingsBorder(bctx, poly[0], s);
+        ictx.save(); ictx.fillStyle = idColor;
         for (const s of [-W, 0, W]) drawRings(ictx, poly, s, 'fill');
         ictx.restore();
       }
     }
   }
 
+  // 邊界描邊的子函式（單一外環）
+  function drawRingsBorder(ctx, outerRing, shiftPx) {
+    ctx.beginPath();
+    const outer = unwrapRing(outerRing);
+    outer.forEach(([L, lat], i) => {
+      const x = ((L + 180) / 360) * W + shiftPx;
+      const y = ((90 - lat) / 180) * H;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.closePath(); ctx.stroke();
+  }
+
+  // 轉 CanvasTexture
   const baseTexture = new THREE.CanvasTexture(base);
   baseTexture.anisotropy = 4;
   baseTexture.wrapS = THREE.RepeatWrapping;
   baseTexture.wrapT = THREE.RepeatWrapping;
-  // three.js 預設 flipY=true，與 SphereGeometry UV 對齊
   baseTexture.needsUpdate = true;
 
   const idPicker = {
     W, H, canvas: idc, ctx: ictx, idMap,
-    // Canvas 原點在上方 → y = (1 - v) * H
     pickUV: (u, v) => {
       let x = Math.floor(((u % 1 + 1) % 1) * W);
       let y = Math.floor((1 - ((v % 1 + 1) % 1)) * H);
       x = Math.min(Math.max(x, 0), W - 1);
       y = Math.min(Math.max(y, 0), H - 1);
-      const p = ictx.getImageData(x, y, 1, 1).data; // [r,g,b,a]
+      const p = ictx.getImageData(x, y, 1, 1).data;
       const colorInt = (p[0]) | (p[1] << 8) | (p[2] << 16);
       const feature = idMap.get(colorInt);
       if (!feature) return null;
@@ -661,6 +758,44 @@ function makeHighlightLayer(W, H) {
 }
 
 /* ---------- 共用工具 ---------- */
+function makeStarfieldTexture({ w=2048, h=1024, stars=3000, nebula=0.0 } = {}) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+
+  // 背景：宇宙黑到深藍微漸層
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#03050a'); g.addColorStop(1, '#050915');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+
+  // 隨機星點
+  for (let i = 0; i < stars; i++) {
+    const x = Math.random() * w, y = Math.random() * h;
+    const r = Math.random() * 1.2 + 0.2;
+    const a = Math.random() * 0.6 + 0.4;
+    const hue = (Math.random() < 0.15) ? (200 + Math.random()*40) : (0 + Math.random()*60);
+    ctx.fillStyle = `hsla(${hue}, 80%, 85%, ${a})`;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.fill();
+  }
+
+  // 淡淡星雲（可選）
+  if (nebula > 0) {
+    const blobs = Math.floor(6 * nebula) + 2;
+    for (let i=0; i<blobs; i++) {
+      const nx = Math.random()*w, ny = Math.random()*h;
+      const nr = Math.random()*200 + 120;
+      const grd = ctx.createRadialGradient(nx, ny, 0, nx, ny, nr);
+      grd.addColorStop(0, 'rgba(150, 80, 255, 0.08)');
+      grd.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grd; ctx.beginPath();
+      ctx.arc(nx, ny, nr, 0, Math.PI*2); ctx.fill();
+    }
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.needsUpdate = true;
+  return tex;
+}
+
 function unwrapRing(ring) {
   const out = [];
   let prev = null, offset = 0;
