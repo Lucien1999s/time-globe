@@ -95,15 +95,13 @@ def make_history_info1(
         "Task: Given a place name, summarize its historical background WITHOUT browsing the web.\n"
         "Rules:\n"
         f"- Respond in {language}.\n"
-        "- Highlight important civilizations, dynasties, or empires.\n"
         "- Mention major historical events, battles, or treaties.\n"
         "- Provide timeline context (centuries / years) when reasonably certain.\n"
         "- Include cultural or architectural heritage if well-known.\n"
-        "- Use concise bullet points; keep within ~700 words.\n"
         "- Avoid fabrication; if uncertain, state the uncertainty explicitly and end to generate.\n"
         f"\nPlace: {place}\n"
         "Output style:\n"
-        "- Bullet points, one to two sentences per bullet; add Gregorian years where helpful.\n"
+        "- Use paragraph formats; keep within ~700 words; add Gregorian years where helpful.\n"
         "- Optionally end with 2–3 keywords as tags.\n"
     )
     return _gemini_chat(prompt, model=model, temperature=temperature)
@@ -140,8 +138,7 @@ def make_history_info2(
                             "- Mention major historical events, battles, or treaties.\n"
                             "- Provide timeline context (centuries / years).\n"
                             "- If available, include cultural or architectural heritage.\n"
-                            "- Use bullet points, concise style.\n"
-                            f"- Respond in {language} within 700 words."
+                            f"- Respond paragraph formats in {language} within 700 words."
                         ),
                     }
                 ],

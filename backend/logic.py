@@ -14,6 +14,7 @@ FRONTEND_DIR = PROJECT_ROOT / "frontend"
 from .services.revgeo import router as revgeo_router
 from .services.wiki_place import router as wiki_router
 from .services.history_llm import router as history_router
+from .services.history_events import router as events_router 
 from .utils.assets import ensure_assets
 
 app = FastAPI(title="Time-Globe MVP")
@@ -34,6 +35,7 @@ def index():
 app.include_router(revgeo_router, prefix="/api", tags=["revgeo"])
 app.include_router(wiki_router, prefix="/api", tags=["place"])
 app.include_router(history_router, prefix="/api", tags=["history"])
+app.include_router(events_router, prefix="/api", tags=["events"])
 
 @app.on_event("startup")
 def _startup():

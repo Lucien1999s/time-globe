@@ -70,6 +70,14 @@ const EL = {
   out: document.getElementById('history-output'),
 };
 
+// 歷史事件 UI 元素
+const EV = {
+  fab: document.getElementById('events-fab'),
+  panel: document.getElementById('events-panel'),
+  list: document.getElementById('events-list'),
+  close: document.getElementById('events-close'),
+};
+
 // 預設占位內容（專業版）
 const DEFAULTS = {
   title: 'Time-Globe：Beyond Space & Time',
@@ -250,6 +258,16 @@ async function onPointerUp(e) {
   lastPlaceName = place;
   await fetchAndRenderPlaceInfo(place, lastCtx);
 
+  // 只要有 city，就顯示「歷史事件」FAB（用 city 當關鍵字）
+  if (lastCtx.city) {
+    EV.fab.style.display = 'inline-block';
+    EV.fab.classList.add('pulse');
+    EV.fab.setAttribute('title', `查看 ${lastCtx.city} 的相關歷史文章`);
+  } else {
+    // 沒有 city → 隱藏 FAB 並關閉面板
+    EV.fab.style.display = 'none';
+    if (EV.panel) EV.panel.classList.remove('open');
+  }
 }
 
 /* ---------- 反向地理編碼：補上州/省、城市，並回傳完整上下文 ---------- */
@@ -824,6 +842,73 @@ function countryISO3(p) {
   return p?.ISO_A3 || p?.iso_a3 || p?.ADM0_A3 || p?.WB_A3 || null;
 }
 
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// 若 city 含非英文字，嘗試用 en-Wikipedia 取英文標題；失敗就用原字串
+async function toLatinCityForEvents(city) {
+  if (!city) return city;
+  if (/[A-Za-z]/.test(city)) return city;  // 已是英文
+
+  try {
+    const q = new URLSearchParams({ name: city, lang: 'en' });
+    const res = await fetch(`/api/placeinfo?${q.toString()}`, { cache: 'no-store' });
+    if (res.ok) {
+      const j = await res.json();
+      if (j?.ok && j.title) return j.title;
+    }
+  } catch (e) {
+    console.warn('[events] toLatinCityForEvents failed:', e);
+  }
+  return city;
+}
+
+function renderEvents(items = []) {
+  EV.list.innerHTML = "";
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.style.padding = '12px';
+    empty.style.color = '#cbd6e6';
+    empty.textContent = 'No results.';
+    EV.list.appendChild(empty);
+    return;
+  }
+  for (const it of items) {
+    const a = document.createElement('a');
+    a.className = 'event-card';
+    a.href = it.url || '#';
+    a.target = '_blank'; a.rel = 'noopener';
+    a.innerHTML = `
+      <div class="thumb">
+        <img src="${escapeHtml(it.image || '/static/assets/default.jpg')}" alt="">
+      </div>
+      <div class="body">
+        <h3>${escapeHtml(it.title || '(untitled)')}</h3>
+        <p>${escapeHtml(it.summary || '')}</p>
+        <div class="meta">${escapeHtml([it.author, it.type].filter(Boolean).join(' · '))}</div>
+      </div>
+    `;
+    EV.list.appendChild(a);
+  }
+}
+
+async function fetchEventsFor(place, only_textual = true) {
+  const p = (place || "").trim();
+  if (!p) return { ok: false, items: [], error: "empty place" };
+
+  const res = await fetch('/api/history/events', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ place: p, only_textual })
+  });
+  if (!res.ok) return { ok: false, items: [], error: `HTTP ${res.status}` };
+
+  const j = await res.json();
+  const items = Array.isArray(j.items) ? j.items : [];
+  return { ok: true, items, query: j.query || p };
+}
+
 /* ---------- 逐幀 ---------- */
 function animate(now) {
   requestAnimationFrame(animate);
@@ -839,5 +924,81 @@ if (btnToggle) {
     document.body.classList.toggle('side-collapsed');
     // 箭頭方向變換
     btnToggle.textContent = document.body.classList.contains('side-collapsed') ? '❮' : '❯';
+  });
+}
+
+if (EV.fab) {
+  EV.fab.addEventListener('click', async () => {
+    EV.fab.classList.remove('pulse');
+
+    // 打開面板 & 先顯示 Loading
+    EV.panel.classList.add('open');
+    EV.panel.setAttribute('aria-hidden', 'false');
+    EV.list.innerHTML = '<div style="padding:12px;color:#cbd6e6">Loading…</div>';
+
+    const city = (lastCtx.city || '').trim();
+    const country = (lastCtx.country || '').trim();
+
+    if (!city && !country) {
+      EV.list.innerHTML = '<div style="padding:12px;color:#cbd6e6">請先點擊地球選擇一座城市或國家，再試一次。</div>';
+      return;
+    }
+
+    let data = null;
+    let usedFallback = false;
+
+    // 1) 先用「城市」查
+    if (city) {
+      data = await fetchEventsFor(city, true);
+      const hasCityResults = data && data.ok && data.items.length > 0;
+
+      // 2) 城市失敗或沒結果 → 用「國家」查
+      if (!hasCityResults && country) {
+        usedFallback = true;
+        data = await fetchEventsFor(country, true);
+      }
+    } else {
+      // 沒城市，但有國家 → 直接用「國家」
+      usedFallback = true;
+      data = await fetchEventsFor(country, true);
+    }
+
+    // 3) 成功與否處理
+    if (!(data && data.ok)) {
+      EV.list.innerHTML = '<div style="padding:12px;color:#ff9aa2">載入失敗，請稍後再試。</div>';
+      return;
+    }
+
+    // 4) 渲染結果
+    renderEvents(data.items);
+
+    // 5) 若啟用 fallback，在列表頂端加一行提示（不動 CSS 也能好看）
+    if (usedFallback) {
+      const note = document.createElement('div');
+      note.style.cssText =
+        'padding:8px 10px;margin:6px 8px 10px;' +
+        'border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.05);' +
+        'border-radius:8px;color:#9fb5d1;font-size:12px;';
+      if (city) {
+        note.textContent = `No result of'${city}', use '${country}' to search.`;
+      } else {
+        note.textContent = `use country '${country}' to search.`;
+      }
+      EV.list.prepend(note);
+    }
+
+    // 6) 完全沒資料時的提示（renderEvents 會顯示 No results.，這裡再補中文說明）
+    if (data.items.length === 0) {
+      const tip = document.createElement('div');
+      tip.style.cssText = 'padding:8px 10px;margin:6px 8px;color:#cbd6e6;font-size:12px;';
+      tip.textContent = '目前沒有符合的文章，換個城市或國家再試試。';
+      EV.list.appendChild(tip);
+    }
+  });
+}
+if (EV.close) {
+  EV.close.addEventListener('click', () => {
+    EV.panel.classList.remove('open');
+    EV.panel.setAttribute('aria-hidden', 'true');
   });
 }
