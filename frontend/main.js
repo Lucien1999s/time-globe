@@ -18,6 +18,23 @@ const TAP  = { maxDistPx: 6, maxMs: 250 };
 const APP = document.getElementById('app');
 const HUD = document.getElementById('hud');
 
+let placeinfoAbort = null;
+
+// === 新增：UI 語言值 → Wikipedia 語言碼 ===
+function uiLangToWikiLang(v) {
+  switch ((v || "").toLowerCase()) {
+    case "繁體中文": return "zh";
+    case "english":   return "en";
+    case "日本語":    return "ja";
+    case "한국어":     return "ko";
+    case "español":   return "es";
+    default:          return "zh";
+  }
+}
+
+// === 新增：最後一次點擊的上下文（送後端打分用） ===
+let lastCtx = { lat: null, lon: null, country: null, admin1: null, city: null };
+
 // side panel elements
 const EL = {
   thumb: document.getElementById('place-thumb'),
@@ -192,22 +209,14 @@ async function onPointerUp(e) {
   flyToDirection(dir, 1000);
 
   // 反向地理編碼 → 推導 place 名稱 → 拉 Wiki/Info 卡
-  const place = await enrichWithRevGeo(lat, lon, picked?.name);
-  if (place) {
-    lastPlaceName = place;
-    fetchAndRenderPlaceInfo(place);
-  } else if (picked?.name) {
-    lastPlaceName = picked.name;
-    fetchAndRenderPlaceInfo(picked.name);
-  } else {
-    // 海洋時也給一個大致名稱
-    const ocean = oceanNameByLatLon(lat, lon);
-    lastPlaceName = ocean || `(${lat.toFixed(3)}, ${lon.toFixed(3)})`;
-    fetchAndRenderPlaceInfo(lastPlaceName);
-  }
+  const ctx = await enrichWithRevGeo(lat, lon, picked?.name);
+  const place = ctx.place || picked?.name || `(${lat.toFixed(3)}, ${lon.toFixed(3)})`;
+  lastPlaceName = place;
+  await fetchAndRenderPlaceInfo(place, lastCtx);
+
 }
 
-/* ---------- 反向地理編碼：補上州/省、城市，並回傳 place 名稱 ---------- */
+/* ---------- 反向地理編碼：補上州/省、城市，並回傳完整上下文 ---------- */
 async function enrichWithRevGeo(lat, lon, countryNameFromPicker) {
   const url = `/api/revgeo?lat=${lat.toFixed(6)}&lon=${lon.toFixed(6)}`;
   try {
@@ -219,8 +228,8 @@ async function enrichWithRevGeo(lat, lon, countryNameFromPicker) {
     const city    = j.city || null;
     const country = j.country || countryNameFromPicker || null;
 
-    // Compose a place string preferring City > Admin1 > Country
-    const place = city || admin1 || country || oceanNameByLatLon(lat, lon) || null;
+    // Compose place: prefer City > Admin1 > Country
+    const place = city || admin1 || country || null;
 
     // Update HUD tail
     if (admin1 || city) {
@@ -231,11 +240,16 @@ async function enrichWithRevGeo(lat, lon, countryNameFromPicker) {
     } else {
       appendHudDetail("(no city)");
     }
-    return place;
+
+    // 同步 lastCtx
+    lastCtx = { lat, lon, country, admin1, city };
+    return { place, country, admin1, city };
   } catch (err) {
     console.warn("[revgeo] failed", err);
     appendHudDetail("(revgeo failed)");
-    return countryNameFromPicker || oceanNameByLatLon(lat, lon) || null;
+    const country = countryNameFromPicker || null;
+    lastCtx = { lat, lon, country, admin1: null, city: null };
+    return { place: country, country, admin1: null, city: null };
   }
 }
 
@@ -261,50 +275,65 @@ function appendHudDetail(text) {
   }
 }
 
-/* ---------- 拉 Wiki Place 基本資料並渲染卡片（含預設回退） ---------- */
-async function fetchAndRenderPlaceInfo(placeName) {
+/* ---------- 拉 Wiki Place 基本資料並渲染卡片（上下文加權 + Abort） ---------- */
+async function fetchAndRenderPlaceInfo(placeName, ctx) {
   try {
-    const url = `/api/placeinfo?name=${encodeURIComponent(placeName)}&lang=zh`;
+    // Abort any previous in-flight request
+    if (placeinfoAbort) placeinfoAbort.abort();
+    placeinfoAbort = new AbortController();
+
+    const uiLang = EL.lang ? EL.lang.value : "繁體中文";
+    const lang = uiLangToWikiLang(uiLang);
+
+    const q = new URLSearchParams({ name: placeName, lang });
+    if (ctx?.country) q.set("country", ctx.country);
+    if (ctx?.admin1)  q.set("admin1",  ctx.admin1);
+    if (ctx?.city)    q.set("city",    ctx.city);
+    if (typeof ctx?.lat === "number") q.set("lat", String(ctx.lat));
+    if (typeof ctx?.lon === "number") q.set("lon", String(ctx.lon));
+
     EL.summary.textContent = "Loading basic info…";
 
-    const res = await fetch(url, { cache: "no-store" });
+    const res = await fetch(`/api/placeinfo?${q.toString()}`, {
+      cache: "no-store",
+      signal: placeinfoAbort.signal
+    });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const j = await res.json();
 
-    // 未找到 → 顯示地名，其他回退到預設
     if (!j.ok) {
       EL.title.textContent = placeName;
       EL.desc.textContent = "";
       EL.summary.textContent = "No Wikipedia info found.";
-      EL.thumb.src = DEFAULTS.img;        // 用預設圖，不隱藏
+      EL.thumb.src = DEFAULTS.img;
       EL.thumb.style.display = "block";
       EL.url.href = "#";
       EL.out.textContent = "";
       return;
     }
 
-    // 正常資料
     EL.title.textContent = j.title || placeName;
     EL.desc.textContent = j.description || "";
     EL.summary.textContent = j.summary || "(no summary)";
     EL.url.href = j.url || "#";
 
-    // 圖片：優先用原圖/縮圖，沒有就退回預設
     const img = j.original_image || j.thumbnail || DEFAULTS.img;
     EL.thumb.src = img;
     EL.thumb.style.display = "block";
 
-    // 清掉舊的 LLM 產出
     EL.out.textContent = "";
   } catch (err) {
+    if (err.name === "AbortError") return; // 被新請求中止：安靜返回
     console.error("[placeinfo]", err);
-    // 失敗時也維持專業預設，但把標題設為查詢地名，摘要顯示錯誤訊息
     EL.title.textContent = placeName || DEFAULTS.title;
     EL.desc.textContent = "";
     EL.summary.textContent = "Failed to load place info.";
     EL.thumb.src = DEFAULTS.img;
     EL.thumb.style.display = "block";
     EL.url.href = "#";
+  } finally {
+    // 清空 controller，避免 memory leak
+    placeinfoAbort = null;
   }
 }
 
