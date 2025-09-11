@@ -1,0 +1,25 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.log
+
+# Virtual environments
+.venv/
+venv/
+
+# Git
+.git
+.gitignore
+
+# OS / Editor junk
+.DS_Store
+*.swp
+
+# Node (若未來前端用 npm)
+node_modules/
+
+# 測試檔案
+history_test.txt
+
+# 不要把你的金鑰打包進去
+.env
