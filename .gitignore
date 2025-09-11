@@ -6,3 +6,5 @@ __pycache__/
 
 # Other system files
 .DS_Store
+
+frontend/assets/demo.mp4

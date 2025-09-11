@@ -80,14 +80,6 @@ A floating **book icon** (bottom-left) opens a panel of related historical artic
 
 ---
 
-### 🎥 Showcase Video
-
-Watch Time Globe in action:
-
-[▶️ Demo Video](frontend/assets/demo.mp4)
-
----
-
 ## 🛠️ Tech Stack
 
 * **Frontend:** Three.js (globe rendering), vanilla JS, CSS
