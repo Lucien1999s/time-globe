@@ -72,7 +72,7 @@ const EL = {
 
 // 預設占位內容（專業版）
 const DEFAULTS = {
-  title: 'Time-Globe：Global Spacetime',
+  title: 'Time-Globe：Beyond Space & Time',
   desc: 'Click the globe for Wiki summary, images, links, plus history and timeline.',
   summary: 'Tip: Rotate (drag), Zoom (scroll), Select (tap). Side button shows History/Timeline.',
   img: '/static/assets/default.jpg',
@@ -98,7 +98,7 @@ animate();
 async function init() {
   scene = new THREE.Scene();
   // 背景星空
-  scene.background = makeStarfieldTexture({ w: 2048, h: 1024, stars: 3500, nebula: 0.15 });
+  scene.background = makeStarfieldTexture({ w: 2048, h: 1024, stars: 1200, nebula: 0.08 });
 
   camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 2000);
   camera.position.set(0, 0, 6);
@@ -313,6 +313,12 @@ function appendHudDetail(text) {
 
 /* ---------- 拉 Wiki Place 基本資料並渲染卡片（上下文加權 + Abort） ---------- */
 async function fetchAndRenderPlaceInfo(placeName, ctx) {
+  // 點擊地圖時自動打開 side panel
+  if (document.body.classList.contains('side-collapsed')) {
+    document.body.classList.remove('side-collapsed');
+    const btnToggle = document.getElementById('toggle-side');
+    if (btnToggle) btnToggle.textContent = '❯';  // 保持箭頭方向正確
+  }
   try {
     // Abort any previous in-flight request
     if (placeinfoAbort) placeinfoAbort.abort();
@@ -764,7 +770,8 @@ function makeStarfieldTexture({ w=2048, h=1024, stars=3000, nebula=0.0 } = {}) {
 
   // 背景：宇宙黑到深藍微漸層
   const g = ctx.createLinearGradient(0, 0, 0, h);
-  g.addColorStop(0, '#03050a'); g.addColorStop(1, '#050915');
+  g.addColorStop(0, '#010207'); 
+  g.addColorStop(1, '#02030b');
   ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
 
   // 隨機星點
@@ -823,4 +830,14 @@ function animate(now) {
   if (!isFlying) controls.update();
   if (flyAnim) flyAnim(now);
   renderer.render(scene, camera);
+}
+
+// === Toggle side panel ===
+const btnToggle = document.getElementById('toggle-side');
+if (btnToggle) {
+  btnToggle.addEventListener('click', () => {
+    document.body.classList.toggle('side-collapsed');
+    // 箭頭方向變換
+    btnToggle.textContent = document.body.classList.contains('side-collapsed') ? '❮' : '❯';
+  });
 }

@@ -165,3 +165,28 @@ html, body {
   text-decoration: none;
 }
 .history-output a:hover { text-decoration: underline; }
+
+/* ====== Side panel toggle button ====== */
+#toggle-side {
+  position: fixed;
+  top: 12px;
+  right: 380px;  /* 初始貼著 side panel */
+  width: 28px; height: 36px;
+  border-radius: 6px 0 0 6px;
+  border: none;
+  background: rgba(255,255,255,0.08);
+  color: #e6edf3;
+  cursor: pointer;
+  z-index: 30;
+  font-size: 16px;
+  transition: right 0.3s ease, background 0.3s;
+}
+#toggle-side:hover { background: rgba(255,255,255,0.15); }
+
+/* 收合時的樣式 */
+body.side-collapsed #side {
+  transform: translateX(100%);
+}
+body.side-collapsed #toggle-side {
+  right: 0;
+}
